@@ -37,6 +37,13 @@ PYTHONPATH=src python -m minionerec_jax.cli print-config
 PYTHONPATH=src python -m minionerec_jax.cli smoke
 PYTHONPATH=src python -m minionerec_jax.cli probe-constraint-mask
 PYTHONPATH=src python -m minionerec_jax.cli eval-metrics --dry-run
+PYTHONPATH=src python -m minionerec_jax.cli eval-official-parity \
+  --dry-run \
+  --checkpoint-dir /tmp/ckpt \
+  --info-file /tmp/info.txt \
+  --test-csv /tmp/test.csv \
+  --result-json /tmp/out.json \
+  --category Industrial_and_Scientific
 ```
 
 ### Download checkpoint snapshot (subfolder-focused)
@@ -123,6 +130,53 @@ PYTHONPATH=src python -m minionerec_jax.cli eval-metrics --dry-run
 
 CLI prints machine-readable lines like `hr@10=...` and `ndcg@10=...`.
 
+### Full parity eval (`official evaluate.py` behavior)
+
+This command runs the full constrained-beam generation path against official
+checkpoint/info/test inputs and writes a JSON that can be fed directly into
+`eval-metrics`.
+
+Dry-run mode (prints config/runtime/path diagnostics, no heavy model load):
+
+```bash
+PYTHONPATH=src python -m minionerec_jax.cli eval-official-parity \
+  --dry-run \
+  --checkpoint-dir /tmp/ckpt \
+  --info-file /tmp/info.txt \
+  --test-csv /tmp/test.csv \
+  --result-json /tmp/out.json \
+  --category Industrial_and_Scientific
+```
+
+Real run example:
+
+```bash
+PYTHONPATH=src python -m minionerec_jax.cli eval-official-parity \
+  --checkpoint-dir artifacts/hf_snapshot/Industrial_ckpt \
+  --info-file ../official-minionerec/data/Amazon/info/Industrial_and_Scientific_5_2016-10-2018-11.txt \
+  --test-csv ../official-minionerec/data/Amazon/test/Industrial_and_Scientific_5_2016-10-2018-11.csv \
+  --result-json artifacts/eval/final_result_Industrial_and_Scientific.json \
+  --category Industrial_and_Scientific \
+  --batch-size 4 \
+  --num-beams 50 \
+  --max-new-tokens 256 \
+  --length-penalty 0.0 \
+  --seed 42
+```
+
+Then compute metrics using the generated JSON:
+
+```bash
+PYTHONPATH=src python -m minionerec_jax.cli eval-metrics \
+  --predictions-json artifacts/eval/final_result_Industrial_and_Scientific.json \
+  --item-info ../official-minionerec/data/Amazon/info/Industrial_and_Scientific_5_2016-10-2018-11
+```
+
+Notes:
+- Constrained decoding uses official-style SID prefix dictionary + EOS fallback.
+- Tokenizer left-padding and decode post-processing follows `split("Response:\n")[-1].strip()`.
+- Default sharding axis dims are `1,1,1,-1,1` and can be overridden by `--sharding-axis-dims`.
+
 ### Deterministic unit tests
 
 ```bash
@@ -142,18 +196,20 @@ PYTHONPATH=src python -m compileall -q src tests && echo COMPILE_OK
 - `src/minionerec_jax/checkpoint.py`: checkpoint download/load wrappers
 - `src/minionerec_jax/beam_constraints.py`: constrained logits processor + prefix map helpers
 - `src/minionerec_jax/eval_metrics.py`: MiniOneRec-style offline HR/NDCG metric computation
+- `src/minionerec_jax/official_eval_parity.py`: official evaluate.py parity generation pipeline (EasyDeL/JAX)
 - `src/minionerec_jax/data/artifact_manifest.py`: manifest schema + IO helpers
-- `src/minionerec_jax/cli.py`: CLI commands including checkpoint/load probes, constraints, and metrics
+- `src/minionerec_jax/cli.py`: CLI commands including checkpoint/load probes, constraints, metrics, and parity eval
 - `scripts/bootstrap_env.sh`: local virtualenv bootstrap
 - `scripts/run_local_smoke.sh`: local smoke and dry-run probe sequence
 - `tests/test_beam_constraints.py`: deterministic constrained-mask parity coverage
 - `tests/test_eval_metrics.py`: offline metric parity coverage
+- `tests/test_official_eval_parity.py`: offline tests for prompt/prefix/postprocess parity helpers
 
 ## Known Limitations
 
-- A successful `probe-load` confirms checkpoint conversion path only.
-- Generation remains unstable due to mesh-context and generation-config compatibility drift.
-- Full constrained beam generation loop parity is intentionally deferred; current scope is logits masking parity + offline metric parity only.
+- A successful `probe-load` confirms checkpoint conversion path, but does not guarantee metric parity.
+- TPU real-run still depends on EasyDeL/JAX runtime compatibility (mesh context, sharding, and generation config attributes).
+- The new `eval-official-parity` command aligns the official evaluation flow, but final paper-level scores still depend on runtime/library versions.
 
 ## GitHub Publish Automation
 

@@ -34,6 +34,7 @@ from minionerec_jax.eval_metrics import (
     load_predictions_json,
     resolve_item_info_path,
 )
+from minionerec_jax.official_eval_parity import run_official_eval_parity
 from minionerec_jax.logging_utils import configure_logging
 from minionerec_jax.paths import get_project_paths
 
@@ -221,6 +222,48 @@ def _cmd_eval_metrics(args: argparse.Namespace, _: ProjectConfig) -> int:
     return 0
 
 
+def _cmd_eval_official_parity(args: argparse.Namespace, _: ProjectConfig) -> int:
+    result = run_official_eval_parity(
+        checkpoint_dir=args.checkpoint_dir,
+        info_file=args.info_file,
+        test_csv=args.test_csv,
+        result_json=args.result_json,
+        category=args.category,
+        batch_size=args.batch_size,
+        num_beams=args.num_beams,
+        max_new_tokens=args.max_new_tokens,
+        length_penalty=args.length_penalty,
+        seed=args.seed,
+        limit=args.limit,
+        dry_run=args.dry_run,
+        sharding_axis_dims=args.sharding_axis_dims,
+    )
+
+    print("eval_official_parity_status=ok")
+    print(f"dry_run={result.dry_run}")
+    print(f"checkpoint_dir={result.checkpoint_dir}")
+    print(f"info_file={result.info_file}")
+    print(f"test_csv={result.test_csv}")
+    print(f"result_json={result.result_json}")
+    print(f"category={result.category}")
+    print(f"category_text={result.category_text}")
+    print(f"sample_count={result.sample_count}")
+    print(f"written_count={result.written_count}")
+    print(f"batch_size={result.batch_size}")
+    print(f"num_beams={result.num_beams}")
+    print(f"max_new_tokens={result.max_new_tokens}")
+    print(f"length_penalty={result.length_penalty}")
+    print(f"seed={result.seed}")
+    print(f"limit={result.limit}")
+    print(f"sharding_axis_dims={','.join(str(value) for value in result.sharding_axis_dims)}")
+    print(f"easydel_available={result.easydel_available}")
+    print(f"jax_available={result.jax_available}")
+    print(f"transformers_available={result.transformers_available}")
+    for warning in result.warnings:
+        print(f"warning={warning}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="minionerec-jax",
@@ -362,6 +405,87 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run with embedded tiny fixture (no external files required).",
     )
     eval_metrics_parser.set_defaults(handler=_cmd_eval_metrics)
+
+    eval_official_parity_parser = subparsers.add_parser(
+        "eval-official-parity",
+        help="Run official evaluate.py parity generation with EasyDeL constrained beam search.",
+    )
+    eval_official_parity_parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        required=True,
+        help="Local checkpoint directory containing model/tokenizer files.",
+    )
+    eval_official_parity_parser.add_argument(
+        "--info-file",
+        type=Path,
+        required=True,
+        help="Official item info .txt file used to build constrained SID prefix maps.",
+    )
+    eval_official_parity_parser.add_argument(
+        "--test-csv",
+        type=Path,
+        required=True,
+        help="Official test CSV path (contains history_item_sid and item_sid columns).",
+    )
+    eval_official_parity_parser.add_argument(
+        "--result-json",
+        type=Path,
+        required=True,
+        help="Output prediction JSON path compatible with eval-metrics.",
+    )
+    eval_official_parity_parser.add_argument(
+        "--category",
+        required=True,
+        help="Category key, e.g. Industrial_and_Scientific or Office_Products.",
+    )
+    eval_official_parity_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="Batch size for generation (official default 4).",
+    )
+    eval_official_parity_parser.add_argument(
+        "--num-beams",
+        type=int,
+        default=50,
+        help="Beam width and return sequence count (official default 50).",
+    )
+    eval_official_parity_parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=256,
+        help="Maximum generated tokens per prompt (official default 256).",
+    )
+    eval_official_parity_parser.add_argument(
+        "--length-penalty",
+        type=float,
+        default=0.0,
+        help="Beam-search length penalty (official default 0.0).",
+    )
+    eval_official_parity_parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for parity reproducibility.",
+    )
+    eval_official_parity_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional row limit for smoke/debug runs.",
+    )
+    eval_official_parity_parser.add_argument(
+        "--sharding-axis-dims",
+        default="1,1,1,-1,1",
+        help="EasyDeL sharding axis dims as comma-separated ints (safe default: 1,1,1,-1,1).",
+    )
+    eval_official_parity_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print key configuration and dependency/path diagnostics without loading model weights.",
+    )
+    eval_official_parity_parser.set_defaults(handler=_cmd_eval_official_parity)
 
     return parser
 

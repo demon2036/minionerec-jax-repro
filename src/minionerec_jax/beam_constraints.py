@@ -131,10 +131,10 @@ class ConstrainedLogitsProcessor:
         self,
         input_ids: Sequence[Sequence[int]] | np.ndarray,
         scores: Any,
-        *,
-        use_jax: bool | None = None,
+        cur_len: int | Any | None = None,
     ) -> Any:
-        backend = _resolve_backend(scores, use_jax)
+        _ = cur_len
+        backend = _resolve_backend(scores, None)
         scores_array = _to_backend_array(scores, backend)
         if scores_array.ndim != 2:
             raise ValueError("`scores` must have shape (batch_size*num_beams, vocab_size).")
@@ -190,4 +190,3 @@ class ConstrainedLogitsProcessor:
 
         self.count += 1
         return scores_log + mask
-

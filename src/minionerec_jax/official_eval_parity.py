@@ -559,12 +559,21 @@ def run_official_eval_parity(
         if not hasattr(model, "mesh"):
             raise RuntimeError("Loaded EasyDeL model does not expose `.mesh` required for generation.")
 
-        replicated_batch_sharding = NamedSharding(model.mesh, PartitionSpec(None, None))
-        input_ids_array = jax.device_put(jnp.asarray(padded_input_ids), replicated_batch_sharding)
-        attention_mask_array = jax.device_put(
-            jnp.asarray(padded_attention_mask),
-            replicated_batch_sharding,
-        )
+        mesh_axis_names = tuple(str(name) for name in model.mesh.axis_names)
+        batch_axes = tuple(name for name in ("fsdp", "dp") if name in mesh_axis_names)
+        if not batch_axes:
+            batch_partition = None
+        elif len(batch_axes) == 1:
+            batch_partition = batch_axes[0]
+        else:
+            batch_partition = batch_axes
+
+        sequence_partition = "sp" if ("sp" in mesh_axis_names and sequence_partition_factor > 1) else None
+        input_partition_spec = PartitionSpec(batch_partition, sequence_partition)
+        input_sharding = NamedSharding(model.mesh, input_partition_spec)
+
+        input_ids_array = jax.device_put(jnp.asarray(padded_input_ids), input_sharding)
+        attention_mask_array = jax.device_put(jnp.asarray(padded_attention_mask), input_sharding)
 
         with model.mesh:
             generation_output = model.generate(

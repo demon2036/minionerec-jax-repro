@@ -133,7 +133,6 @@ class ConstrainedLogitsProcessor:
         scores: Any,
         cur_len: int | Any | None = None,
     ) -> Any:
-        _ = cur_len
         backend = _resolve_backend(scores, None)
         scores_array = _to_backend_array(scores, backend)
         if scores_array.ndim != 2:
@@ -160,10 +159,24 @@ class ConstrainedLogitsProcessor:
             input_ids_array.reshape(-1, self._num_beams, input_ids_array.shape[-1])
         ):
             for beam_id, sent in enumerate(beam_sent):
-                if self.count == 0:
-                    hash_key = sent[-self.prefix_index:]
+                if cur_len is None:
+                    effective_sent = sent
                 else:
-                    hash_key = sent[-self.count:]
+                    try:
+                        effective_length = int(np.asarray(cur_len).reshape(()))
+                    except Exception:
+                        effective_length = sent.shape[0]
+
+                    if effective_length <= 0:
+                        effective_length = sent.shape[0]
+                    effective_length = min(effective_length, sent.shape[0])
+                    effective_sent = sent[:effective_length]
+
+                if self.count == 0:
+                    window_size = self.prefix_index
+                else:
+                    window_size = self.count
+                hash_key = effective_sent[-window_size:] if window_size > 0 else effective_sent[:0]
                 prefix_allowed_tokens = self._prefix_allowed_tokens_fn(batch_id, hash_key.tolist())
 
                 row_index = batch_id * self._num_beams + beam_id

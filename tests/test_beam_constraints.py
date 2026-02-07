@@ -154,6 +154,65 @@ class BeamConstraintsTest(unittest.TestCase):
             ],
         )
 
+    def test_cur_len_slices_effective_sequence_for_easydel_padded_state(self) -> None:
+        calls: list[list[int]] = []
+
+        def prefix_allowed_tokens_fn(_batch_id: int, token_window: list[int]) -> list[int]:
+            calls.append(list(token_window))
+            token_map = {
+                "1-2-3": [4],
+                "4-5-6": [5],
+                "7": [8],
+                "9": [6],
+            }
+            return token_map.get(hash_tokens(token_window), [])
+
+        processor = ConstrainedLogitsProcessor(
+            prefix_allowed_tokens_fn=prefix_allowed_tokens_fn,
+            num_beams=2,
+            base_model="llama",
+            eos_token_id=0,
+        )
+
+        eos_pad = 151645
+        input_ids_step0 = np.asarray(
+            [
+                [eos_pad, eos_pad, 1, 2, 3, eos_pad, eos_pad, eos_pad],
+                [eos_pad, eos_pad, 4, 5, 6, eos_pad, eos_pad, eos_pad],
+            ],
+            dtype=np.int64,
+        )
+        scores_step0 = np.asarray(
+            [
+                [0.1, 0.2, 0.3, 0.4, 1.8, 0.1, 0.0, -0.1, -0.2, -0.3],
+                [0.1, 0.2, 0.3, 0.4, 0.1, 1.8, 0.0, -0.1, -0.2, -0.3],
+            ],
+            dtype=np.float64,
+        )
+        output_step0 = np.asarray(processor(input_ids_step0, scores_step0, cur_len=5), dtype=np.float64)
+        self.assertEqual(np.where(np.isfinite(output_step0[0]))[0].tolist(), [4])
+        self.assertEqual(np.where(np.isfinite(output_step0[1]))[0].tolist(), [5])
+
+        input_ids_step1 = np.asarray(
+            [
+                [eos_pad, eos_pad, 1, 2, 3, 7, eos_pad, eos_pad],
+                [eos_pad, eos_pad, 4, 5, 6, 9, eos_pad, eos_pad],
+            ],
+            dtype=np.int64,
+        )
+        scores_step1 = np.asarray(
+            [
+                [0.1, 0.2, 0.3, 0.4, 0.0, 0.1, 0.2, 0.3, 1.9, 0.0],
+                [0.1, 0.2, 0.3, 0.4, 0.0, 0.1, 1.9, 0.3, 0.2, 0.0],
+            ],
+            dtype=np.float64,
+        )
+        output_step1 = np.asarray(processor(input_ids_step1, scores_step1, cur_len=6), dtype=np.float64)
+        self.assertEqual(np.where(np.isfinite(output_step1[0]))[0].tolist(), [8])
+        self.assertEqual(np.where(np.isfinite(output_step1[1]))[0].tolist(), [6])
+
+        self.assertEqual(calls, [[1, 2, 3], [4, 5, 6], [7], [9]])
+
     def test_gpt2_prefix_index_branch(self) -> None:
         gpt2_calls: list[list[int]] = []
 

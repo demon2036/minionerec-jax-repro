@@ -105,12 +105,20 @@ def parse_sharding_axis_dims(raw_value: str | Sequence[int]) -> tuple[int, ...]:
     else:
         dims = tuple(int(value) for value in raw_value)
 
-    if len(dims) != 5:
+    if len(dims) not in (4, 5):
         raise RuntimeError(
-            "`sharding_axis_dims` must contain 5 integers, e.g. `1,1,1,-1,1`. "
+            "`sharding_axis_dims` must contain 4 or 5 integers, "
+            "e.g. `1,1,1,-1` or `1,1,1,-1,1`. "
             f"Received: {dims}"
         )
     return dims
+
+
+def _should_retry_mesh_with_4d_axis_dims(error: Exception, dims: tuple[int, ...]) -> bool:
+    if len(dims) != 5:
+        return False
+    message = str(error)
+    return "devices.ndim == 5 and len(axis_names) == 4" in message
 
 
 def resolve_category_text(category: str) -> str:
@@ -428,16 +436,36 @@ def run_official_eval_parity(
     tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = "left"
 
-    model = AutoEasyDeLModelForCausalLM.from_pretrained(
-        str(resolved_checkpoint_dir),
-        from_torch=True,
-        auto_shard_model=False,
-        sharding_axis_dims=parsed_sharding_axis_dims,
-        dtype=jnp.bfloat16,
-        param_dtype=jnp.bfloat16,
-        quantize_tensors=False,
-        verbose=False,
-    )
+    model_load_kwargs = {
+        "from_torch": True,
+        "auto_shard_model": False,
+        "dtype": jnp.bfloat16,
+        "param_dtype": jnp.bfloat16,
+        "quantize_tensors": False,
+        "verbose": False,
+    }
+
+    effective_sharding_axis_dims = parsed_sharding_axis_dims
+    try:
+        model = AutoEasyDeLModelForCausalLM.from_pretrained(
+            str(resolved_checkpoint_dir),
+            sharding_axis_dims=effective_sharding_axis_dims,
+            **model_load_kwargs,
+        )
+    except ValueError as exc:
+        if not _should_retry_mesh_with_4d_axis_dims(exc, parsed_sharding_axis_dims):
+            raise
+
+        effective_sharding_axis_dims = parsed_sharding_axis_dims[:4]
+        warnings.append(
+            "mesh_axis_dims_autofix=retry_with_4d_axis_dims"
+            f"({parsed_sharding_axis_dims}->{effective_sharding_axis_dims})"
+        )
+        model = AutoEasyDeLModelForCausalLM.from_pretrained(
+            str(resolved_checkpoint_dir),
+            sharding_axis_dims=effective_sharding_axis_dims,
+            **model_load_kwargs,
+        )
     model.eval()
 
     _ensure_generation_config_attrs(model.generation_config)
@@ -548,7 +576,7 @@ def run_official_eval_parity(
         length_penalty=length_penalty,
         seed=seed,
         limit=limit,
-        sharding_axis_dims=parsed_sharding_axis_dims,
+        sharding_axis_dims=effective_sharding_axis_dims,
         easydel_available=easydel_available,
         jax_available=jax_available,
         transformers_available=transformers_available,

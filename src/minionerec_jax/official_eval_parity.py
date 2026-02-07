@@ -444,6 +444,7 @@ def run_official_eval_parity(
 
     import jax
     import jax.numpy as jnp
+    from jax.sharding import NamedSharding, PartitionSpec
     from transformers import AutoTokenizer, GenerationConfig
 
     try:
@@ -558,10 +559,17 @@ def run_official_eval_parity(
         if not hasattr(model, "mesh"):
             raise RuntimeError("Loaded EasyDeL model does not expose `.mesh` required for generation.")
 
+        replicated_batch_sharding = NamedSharding(model.mesh, PartitionSpec(None, None))
+        input_ids_array = jax.device_put(jnp.asarray(padded_input_ids), replicated_batch_sharding)
+        attention_mask_array = jax.device_put(
+            jnp.asarray(padded_attention_mask),
+            replicated_batch_sharding,
+        )
+
         with model.mesh:
             generation_output = model.generate(
-                input_ids=jnp.asarray(padded_input_ids),
-                attention_mask=jnp.asarray(padded_attention_mask),
+                input_ids=input_ids_array,
+                attention_mask=attention_mask_array,
                 generation_config=generation_config,
                 logits_processor=logits_processor,
             )

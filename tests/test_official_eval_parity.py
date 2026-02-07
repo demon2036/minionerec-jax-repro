@@ -7,8 +7,10 @@ import unittest
 from minionerec_jax.official_eval_parity import (
     INSTRUCTION_TEMPLATE,
     OfficialTokenizerAdapter,
+    _resolve_axis_dims_for_device_count,
     build_eval_prompt_encoding,
     build_semantic_prefix_allowed_token_map,
+    left_pad_encodings,
     parse_sharding_axis_dims,
     postprocess_and_group_outputs,
     run_official_eval_parity,
@@ -134,6 +136,24 @@ class OfficialEvalParityTest(unittest.TestCase):
         self.assertEqual(result.sample_count, 1)
         self.assertEqual(result.written_count, 0)
         self.assertEqual(result.category_text, "industrial and scientific items")
+
+    def test_resolve_axis_dims_and_padding_multiple(self) -> None:
+        resolved = _resolve_axis_dims_for_device_count((1, 1, 1, -1, 1), device_count=4)
+        self.assertEqual(resolved, (1, 1, 1, 4, 1))
+
+        encodings = [
+            {"input_ids": [1, 2, 3], "attention_mask": [1, 1, 1]},
+            {"input_ids": [1, 2, 3, 4, 5], "attention_mask": [1, 1, 1, 1, 1]},
+        ]
+        padded_input_ids, padded_attention_mask, max_len = left_pad_encodings(
+            encodings,
+            pad_token_id=0,
+            pad_to_multiple_of=4,
+        )
+
+        self.assertEqual(max_len, 8)
+        self.assertEqual(tuple(padded_input_ids.shape), (2, 8))
+        self.assertEqual(tuple(padded_attention_mask.shape), (2, 8))
 
 
 if __name__ == "__main__":

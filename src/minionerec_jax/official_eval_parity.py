@@ -114,6 +114,25 @@ def parse_sharding_axis_dims(raw_value: str | Sequence[int]) -> tuple[int, ...]:
     return dims
 
 
+def _resolve_axis_dims_for_device_count(axis_dims: Sequence[int], device_count: int) -> tuple[int, ...]:
+    dims = [int(value) for value in axis_dims]
+    unresolved_indexes = [index for index, value in enumerate(dims) if value == -1]
+
+    if len(unresolved_indexes) > 1:
+        return tuple(dims)
+
+    if len(unresolved_indexes) == 1:
+        unresolved_index = unresolved_indexes[0]
+        known_product = 1
+        for value in dims:
+            if value != -1:
+                known_product *= abs(value)
+        if known_product > 0 and device_count > 0 and device_count % known_product == 0:
+            dims[unresolved_index] = device_count // known_product
+
+    return tuple(abs(value) for value in dims)
+
+
 def _should_retry_mesh_with_4d_axis_dims(error: Exception, dims: tuple[int, ...]) -> bool:
     if len(dims) != 5:
         return False
@@ -272,11 +291,14 @@ def left_pad_encodings(
     encodings: Sequence[Mapping[str, Sequence[int]]],
     *,
     pad_token_id: int,
+    pad_to_multiple_of: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     if not encodings:
         raise RuntimeError("Cannot pad an empty batch.")
 
     max_len = max(len(encoding["input_ids"]) for encoding in encodings)
+    if pad_to_multiple_of is not None and pad_to_multiple_of > 1:
+        max_len = int(np.ceil(max_len / pad_to_multiple_of) * pad_to_multiple_of)
     padded_input_ids: list[list[int]] = []
     padded_attention_mask: list[list[int]] = []
 
@@ -420,6 +442,7 @@ def run_official_eval_parity(
 
     _set_seed(seed)
 
+    import jax
     import jax.numpy as jnp
     from transformers import AutoTokenizer, GenerationConfig
 
@@ -493,11 +516,23 @@ def run_official_eval_parity(
     grouped_predictions: list[list[str]] = []
     batch_count = (len(encodings) + batch_size - 1) // batch_size
 
+    resolved_axis_dims = _resolve_axis_dims_for_device_count(
+        effective_sharding_axis_dims,
+        device_count=int(jax.device_count()),
+    )
+    sequence_partition_factor = 1
+    if len(resolved_axis_dims) >= 4:
+        sequence_partition_factor = int(resolved_axis_dims[3])
+    pad_to_multiple_of = sequence_partition_factor if sequence_partition_factor > 1 else None
+    if pad_to_multiple_of is not None:
+        warnings.append(f"input_pad_multiple_of={pad_to_multiple_of}")
+
     for batch_index in range(batch_count):
         batch_encodings = encodings[batch_index * batch_size : (batch_index + 1) * batch_size]
         padded_input_ids, padded_attention_mask, max_prompt_len = left_pad_encodings(
             batch_encodings,
             pad_token_id=int(tokenizer.pad_token_id),
+            pad_to_multiple_of=pad_to_multiple_of,
         )
 
         generation_config = GenerationConfig(

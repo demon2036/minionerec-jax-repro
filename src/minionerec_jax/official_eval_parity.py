@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import csv
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -346,6 +347,87 @@ def _ensure_generation_config_attrs(generation_config: Any) -> None:
             setattr(generation_config, name, value)
 
 
+
+
+@contextmanager
+def _patched_easydel_generation_runtime(*, jax_module: Any, jnp_module: Any):
+    original_tree_map = jax_module.tree_util.tree_map
+
+    try:
+        from easydel.layers.caching.transformer.transformer_cache import TransformerCacheView
+    except Exception:
+        TransformerCacheView = None
+
+    original_concatenate = None
+    if TransformerCacheView is not None:
+        original_concatenate = TransformerCacheView.concatenate_to_cache
+
+    def safe_tree_map(function: Any, tree: Any, *rest: Any, **kwargs: Any):
+        def wrapped(*values: Any):
+            converted: list[Any] = []
+            for value in values:
+                if isinstance(value, (int, np.integer)):
+                    converted.append(jnp_module.asarray(value, dtype=jnp_module.int32))
+                else:
+                    converted.append(value)
+            return function(*converted)
+
+        return original_tree_map(wrapped, tree, *rest, **kwargs)
+
+    def patched_concatenate_to_cache(
+        self: Any,
+        query: Any,
+        key: Any,
+        value: Any,
+        quantizer: Any,
+        cache_metadata: Any,
+        attention_mask: Any,
+        partition_manager: Any,
+        causal_mask: Any = None,
+        token_type_ids: Any = None,
+    ):
+        if causal_mask is not None and hasattr(causal_mask, "shape"):
+            max_length = None
+            if getattr(self, "value", None) is not None and hasattr(self.value, "shape"):
+                try:
+                    max_length = int(self.value.shape[1])
+                except Exception:
+                    max_length = None
+
+            if max_length is not None and max_length > 0:
+                try:
+                    if len(causal_mask.shape) >= 4 and (
+                        int(causal_mask.shape[-1]) > max_length or int(causal_mask.shape[-2]) > max_length
+                    ):
+                        causal_mask = causal_mask[..., :max_length, :max_length]
+                except Exception:
+                    pass
+
+        return original_concatenate(
+            self,
+            query,
+            key,
+            value,
+            quantizer,
+            cache_metadata,
+            attention_mask,
+            partition_manager,
+            causal_mask=causal_mask,
+            token_type_ids=token_type_ids,
+        )
+
+    jax_module.tree_util.tree_map = safe_tree_map
+    if TransformerCacheView is not None and original_concatenate is not None:
+        TransformerCacheView.concatenate_to_cache = patched_concatenate_to_cache
+
+    try:
+        yield
+    finally:
+        jax_module.tree_util.tree_map = original_tree_map
+        if TransformerCacheView is not None and original_concatenate is not None:
+            TransformerCacheView.concatenate_to_cache = original_concatenate
+
+
 def run_official_eval_parity(
     *,
     checkpoint_dir: str | Path,
@@ -493,6 +575,7 @@ def run_official_eval_parity(
     model.eval()
 
     _ensure_generation_config_attrs(model.generation_config)
+    warnings.append("runtime_patch=easydel_tree_map_and_causal_mask_guard")
 
     model.config.pad_token_id = tokenizer.eos_token_id
     model.config.eos_token_id = tokenizer.eos_token_id
@@ -575,13 +658,15 @@ def run_official_eval_parity(
         input_ids_array = jax.device_put(jnp.asarray(padded_input_ids), input_sharding)
         attention_mask_array = jax.device_put(jnp.asarray(padded_attention_mask), input_sharding)
 
-        with model.mesh:
-            generation_output = model.generate(
-                input_ids=input_ids_array,
-                attention_mask=attention_mask_array,
-                generation_config=generation_config,
-                logits_processor=logits_processor,
-            )
+        with _patched_easydel_generation_runtime(jax_module=jax, jnp_module=jnp):
+            with model.mesh:
+                generation_output = model.generate(
+                    input_ids=input_ids_array,
+                    attention_mask=attention_mask_array,
+                    generation_config=generation_config,
+                    logits_processor=logits_processor,
+                    trace=False,
+                )
 
         sequences = getattr(generation_output, "sequences", generation_output)
         completions = np.asarray(sequences)[:, max_prompt_len:]

@@ -89,6 +89,12 @@ def _to_backend_array(value: Any, backend: str) -> Any:
     return np.asarray(value)
 
 
+def _to_backend_float32(value: Any, backend: str) -> Any:
+    if backend == "jax":
+        return jnp.asarray(value, dtype=jnp.float32)
+    return np.asarray(value, dtype=np.float32)
+
+
 def _log_softmax(scores: Any, backend: str) -> Any:
     xp = jnp if backend == "jax" else np
     shifted_scores = scores - xp.max(scores, axis=-1, keepdims=True)
@@ -149,11 +155,11 @@ class ConstrainedLogitsProcessor:
         if input_ids_array.shape[0] % self._num_beams != 0:
             raise ValueError("`input_ids.shape[0]` must be divisible by `num_beams`.")
 
-        scores_log = _log_softmax(scores_array, backend)
+        scores_log = _log_softmax(_to_backend_float32(scores_array, backend), backend)
         if backend == "jax":
-            mask = jnp.full_like(scores_log, -jnp.inf)
+            mask = jnp.full(scores_log.shape, -jnp.inf, dtype=scores_log.dtype)
         else:
-            mask = np.full_like(scores_log, -np.inf)
+            mask = np.full(scores_log.shape, -np.inf, dtype=scores_log.dtype)
 
         for batch_id, beam_sent in enumerate(
             input_ids_array.reshape(-1, self._num_beams, input_ids_array.shape[-1])

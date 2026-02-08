@@ -59,6 +59,11 @@ class OfficialEvalParityResult:
     length_penalty: float
     seed: int
     limit: int | None
+    start_index: int
+    trace: bool
+    early_stopping: bool | str
+    model_dtype: str
+    param_dtype: str
     sharding_axis_dims: tuple[int, ...]
     easydel_available: bool
     jax_available: bool
@@ -258,13 +263,22 @@ def build_eval_prompt_encoding(
     }, history
 
 
-def load_test_rows(test_csv: str | Path, *, limit: int | None) -> list[dict[str, str]]:
+def load_test_rows(
+    test_csv: str | Path,
+    *,
+    limit: int | None,
+    start_index: int = 0,
+) -> list[dict[str, str]]:
     csv_path = resolve_local_path(test_csv)
     rows: list[dict[str, str]] = []
 
+    normalized_start_index = max(0, int(start_index))
+
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
-        for row in reader:
+        for row_index, row in enumerate(reader):
+            if row_index < normalized_start_index:
+                continue
             rows.append(dict(row))
             if limit is not None and limit >= 0 and len(rows) >= limit:
                 break
@@ -346,6 +360,43 @@ def _ensure_generation_config_attrs(generation_config: Any) -> None:
         if not hasattr(generation_config, name):
             setattr(generation_config, name, value)
 
+
+
+
+def parse_early_stopping(value: bool | str | None) -> bool | str:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    if normalized == "never":
+        return "never"
+
+    raise RuntimeError(
+        "`early_stopping` must be one of: true, false, never. "
+        f"Received: {value!r}"
+    )
+
+
+def parse_model_dtype(value: str | None) -> str:
+    if value is None:
+        return "bfloat16"
+
+    normalized = str(value).strip().lower()
+    if normalized in {"bf16", "bfloat16"}:
+        return "bfloat16"
+    if normalized in {"fp32", "float32"}:
+        return "float32"
+
+    raise RuntimeError(
+        "`model_dtype`/`param_dtype` must be one of: bfloat16, float32. "
+        f"Received: {value!r}"
+    )
 
 
 
@@ -441,7 +492,12 @@ def run_official_eval_parity(
     length_penalty: float,
     seed: int,
     limit: int | None,
+    start_index: int = 0,
     dry_run: bool,
+    trace: bool = False,
+    early_stopping: bool | str = False,
+    model_dtype: str = "bfloat16",
+    param_dtype: str = "bfloat16",
     sharding_axis_dims: str | Sequence[int] = (1, 1, 1, -1, 1),
 ) -> OfficialEvalParityResult:
     resolved_checkpoint_dir = resolve_local_path(checkpoint_dir)
@@ -457,8 +513,14 @@ def run_official_eval_parity(
         raise RuntimeError("`num_beams` must be positive.")
     if max_new_tokens <= 0:
         raise RuntimeError("`max_new_tokens` must be positive.")
+    if start_index < 0:
+        raise RuntimeError("`start_index` must be non-negative.")
 
     warnings: list[str] = []
+
+    parsed_early_stopping = parse_early_stopping(early_stopping)
+    parsed_model_dtype = parse_model_dtype(model_dtype)
+    parsed_param_dtype = parse_model_dtype(param_dtype)
 
     easydel_available = _module_available("easydel")
     jax_available = _module_available("jax")
@@ -467,7 +529,7 @@ def run_official_eval_parity(
     preview_sample_count = 0
     if resolved_test_csv.exists():
         try:
-            preview_sample_count = len(load_test_rows(resolved_test_csv, limit=limit))
+            preview_sample_count = len(load_test_rows(resolved_test_csv, limit=limit, start_index=start_index))
         except Exception as exc:
             warnings.append(f"failed_preview_test_csv={type(exc).__name__}:{exc}")
     else:
@@ -495,6 +557,11 @@ def run_official_eval_parity(
             length_penalty=length_penalty,
             seed=seed,
             limit=limit,
+            start_index=start_index,
+            trace=trace,
+            early_stopping=parsed_early_stopping,
+            model_dtype=parsed_model_dtype,
+            param_dtype=parsed_param_dtype,
             sharding_axis_dims=parsed_sharding_axis_dims,
             easydel_available=easydel_available,
             jax_available=jax_available,
@@ -527,7 +594,7 @@ def run_official_eval_parity(
     import jax
     import jax.numpy as jnp
     from jax.sharding import NamedSharding, PartitionSpec
-    from transformers import AutoTokenizer, GenerationConfig
+    from transformers import AutoConfig, AutoTokenizer, GenerationConfig
 
     try:
         from easydel.modules.auto.auto_modeling import AutoEasyDeLModelForCausalLM
@@ -542,14 +609,44 @@ def run_official_eval_parity(
     tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = "left"
 
+    hf_model_config = AutoConfig.from_pretrained(str(resolved_checkpoint_dir))
+    easydel_config_kwargs: dict[str, Any] = {}
+
+    rope_theta = getattr(hf_model_config, "rope_theta", None)
+    if rope_theta is not None:
+        easydel_config_kwargs["rope_theta"] = float(rope_theta)
+
+    if hasattr(hf_model_config, "tie_word_embeddings"):
+        easydel_config_kwargs["tie_word_embeddings"] = bool(
+            getattr(hf_model_config, "tie_word_embeddings")
+        )
+
+    if easydel_config_kwargs:
+        warnings.append(
+            "easydel_config_overrides="
+            + ",".join(f"{key}:{value}" for key, value in sorted(easydel_config_kwargs.items()))
+        )
+
+    if parsed_model_dtype != "bfloat16" or parsed_param_dtype != "bfloat16":
+        warnings.append(
+            f"non_default_dtypes=model:{parsed_model_dtype},param:{parsed_param_dtype}"
+        )
+
+    dtype_lookup = {
+        "bfloat16": jnp.bfloat16,
+        "float32": jnp.float32,
+    }
+
     model_load_kwargs = {
         "from_torch": True,
         "auto_shard_model": False,
-        "dtype": jnp.bfloat16,
-        "param_dtype": jnp.bfloat16,
+        "dtype": dtype_lookup[parsed_model_dtype],
+        "param_dtype": dtype_lookup[parsed_param_dtype],
         "quantize_tensors": False,
         "verbose": False,
     }
+    if easydel_config_kwargs:
+        model_load_kwargs["config_kwargs"] = easydel_config_kwargs
 
     effective_sharding_axis_dims = parsed_sharding_axis_dims
     try:
@@ -593,7 +690,7 @@ def run_official_eval_parity(
     )
     prefix_allowed_tokens_fn = build_prefix_allowed_tokens_fn(prefix_token_map)
 
-    test_rows = load_test_rows(resolved_test_csv, limit=limit)
+    test_rows = load_test_rows(resolved_test_csv, limit=limit, start_index=start_index)
     tokenizer_adapter = OfficialTokenizerAdapter(tokenizer)
     encodings, output_rows = build_eval_payload(test_rows, tokenizer_adapter=tokenizer_adapter)
 
@@ -628,6 +725,7 @@ def run_official_eval_parity(
             max_new_tokens=int(max_new_tokens),
             top_k=None,
             top_p=None,
+            early_stopping=parsed_early_stopping,
         )
         _ensure_generation_config_attrs(generation_config)
 
@@ -665,7 +763,7 @@ def run_official_eval_parity(
                     attention_mask=attention_mask_array,
                     generation_config=generation_config,
                     logits_processor=logits_processor,
-                    trace=False,
+                    trace=trace,
                 )
 
         sequences = getattr(generation_output, "sequences", generation_output)
@@ -713,6 +811,11 @@ def run_official_eval_parity(
         length_penalty=length_penalty,
         seed=seed,
         limit=limit,
+        start_index=start_index,
+        trace=trace,
+        early_stopping=parsed_early_stopping,
+        model_dtype=parsed_model_dtype,
+        param_dtype=parsed_param_dtype,
         sharding_axis_dims=effective_sharding_axis_dims,
         easydel_available=easydel_available,
         jax_available=jax_available,
@@ -731,6 +834,7 @@ __all__ = [
     "build_eval_prompt_encoding",
     "build_semantic_prefix_allowed_token_map",
     "left_pad_encodings",
+    "parse_early_stopping",
     "parse_sharding_axis_dims",
     "postprocess_and_group_outputs",
     "run_official_eval_parity",

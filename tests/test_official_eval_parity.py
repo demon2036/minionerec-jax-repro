@@ -11,6 +11,7 @@ from minionerec_jax.official_eval_parity import (
     build_eval_prompt_encoding,
     build_semantic_prefix_allowed_token_map,
     left_pad_encodings,
+    parse_model_dtype,
     parse_sharding_axis_dims,
     postprocess_and_group_outputs,
     run_official_eval_parity,
@@ -136,6 +137,55 @@ class OfficialEvalParityTest(unittest.TestCase):
         self.assertEqual(result.sample_count, 1)
         self.assertEqual(result.written_count, 0)
         self.assertEqual(result.category_text, "industrial and scientific items")
+        self.assertFalse(result.early_stopping)
+        self.assertEqual(result.start_index, 0)
+        self.assertEqual(result.model_dtype, "bfloat16")
+        self.assertEqual(result.param_dtype, "bfloat16")
+
+        self.assertEqual(parse_model_dtype("bf16"), "bfloat16")
+        self.assertEqual(parse_model_dtype("float32"), "float32")
+        with self.assertRaises(RuntimeError):
+            parse_model_dtype("float16")
+
+
+    def test_start_index_skips_prefix_rows_in_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            checkpoint_dir = root / "ckpt"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+            info_file = root / "info.txt"
+            info_file.write_text("<sid-a>\tItem A\t0\n", encoding="utf-8")
+
+            test_csv = root / "test.csv"
+            test_csv.write_text(
+                "user_id,history_item_sid,item_sid\n"
+                "u1,\"['<sid-a>']\",<sid-b>\n"
+                "u2,\"['<sid-c>']\",<sid-d>\n",
+                encoding="utf-8",
+            )
+
+            result_json = root / "out.json"
+
+            result = run_official_eval_parity(
+                checkpoint_dir=checkpoint_dir,
+                info_file=info_file,
+                test_csv=test_csv,
+                result_json=result_json,
+                category="Industrial_and_Scientific",
+                batch_size=2,
+                num_beams=4,
+                max_new_tokens=8,
+                length_penalty=0.0,
+                seed=42,
+                limit=None,
+                start_index=1,
+                dry_run=True,
+                sharding_axis_dims="1,1,1,-1,1",
+            )
+
+        self.assertEqual(result.sample_count, 1)
+        self.assertEqual(result.start_index, 1)
 
     def test_resolve_axis_dims_and_padding_multiple(self) -> None:
         resolved = _resolve_axis_dims_for_device_count((1, 1, 1, -1, 1), device_count=4)

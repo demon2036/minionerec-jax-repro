@@ -235,7 +235,12 @@ def _cmd_eval_official_parity(args: argparse.Namespace, _: ProjectConfig) -> int
         length_penalty=args.length_penalty,
         seed=args.seed,
         limit=args.limit,
+        start_index=args.start_index,
         dry_run=args.dry_run,
+        trace=args.trace,
+        early_stopping=args.early_stopping,
+        model_dtype=args.model_dtype,
+        param_dtype=args.param_dtype,
         sharding_axis_dims=args.sharding_axis_dims,
     )
 
@@ -255,6 +260,11 @@ def _cmd_eval_official_parity(args: argparse.Namespace, _: ProjectConfig) -> int
     print(f"length_penalty={result.length_penalty}")
     print(f"seed={result.seed}")
     print(f"limit={result.limit}")
+    print(f"start_index={result.start_index}")
+    print(f"trace={result.trace}")
+    print(f"early_stopping={result.early_stopping}")
+    print(f"model_dtype={result.model_dtype}")
+    print(f"param_dtype={result.param_dtype}")
     print(f"sharding_axis_dims={','.join(str(value) for value in result.sharding_axis_dims)}")
     print(f"easydel_available={result.easydel_available}")
     print(f"jax_available={result.jax_available}")
@@ -476,6 +486,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional row limit for smoke/debug runs.",
     )
     eval_official_parity_parser.add_argument(
+        "--start-index",
+        type=int,
+        default=0,
+        help="Optional starting row index into test CSV (default: 0).",
+    )
+    eval_official_parity_parser.add_argument(
+        "--model-dtype",
+        default="bfloat16",
+        help=(
+            "Model compute dtype passed to EasyDeL loader. "
+            "Supported: bfloat16|bf16|float32|fp32 (default: bfloat16)."
+        ),
+    )
+    eval_official_parity_parser.add_argument(
+        "--param-dtype",
+        default="bfloat16",
+        help=(
+            "Model parameter dtype passed to EasyDeL loader. "
+            "Supported: bfloat16|bf16|float32|fp32 (default: bfloat16)."
+        ),
+    )
+    eval_official_parity_parser.add_argument(
         "--sharding-axis-dims",
         default="1,1,1,-1,1",
         help="EasyDeL sharding axis dims as comma-separated ints (safe default: 1,1,1,-1,1).",
@@ -484,6 +516,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Print key configuration and dependency/path diagnostics without loading model weights.",
+    )
+    eval_official_parity_parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="Enable traced EasyDeL generation loop (default false uses debug loop).",
+    )
+    eval_official_parity_parser.add_argument(
+        "--early-stopping",
+        default="false",
+        choices=("false", "true", "never"),
+        help="Beam-search early_stopping mode passed into GenerationConfig (default false).",
     )
     eval_official_parity_parser.set_defaults(handler=_cmd_eval_official_parity)
 

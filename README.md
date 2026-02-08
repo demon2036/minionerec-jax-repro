@@ -207,9 +207,33 @@ PYTHONPATH=src python -m compileall -q src tests && echo COMPILE_OK
 
 ## Known Limitations
 
-- A successful `probe-load` confirms checkpoint conversion path, but does not guarantee metric parity.
-- TPU real-run still depends on EasyDeL/JAX runtime compatibility (mesh context, sharding, and generation config attributes).
-- The new `eval-official-parity` command aligns the official evaluation flow, but final paper-level scores still depend on runtime/library versions.
+- `probe-load` confirms checkpoint conversion path, but does not guarantee final ranking quality.
+- End-to-end parity still depends on pinned runtime versions (`jax`, `easydel`, `transformers`, `huggingface_hub`) and TPU topology.
+- `official-minionerec/evaluate.py` defaults to `num_beams=50`; for paper-level alignment, run the paper profile (`num_beams=16`) shown below.
+
+
+## Paper Alignment (TPU Evidence)
+
+The following **full Office** run aligns with the paper target when using beam width 16:
+
+- Artifact: `artifacts/eval/office_full_beam16_batch16.json`
+- Sample count: `4866`
+- Metrics (`eval-metrics`):
+  - `hr@10=0.164611590629` (paper `0.1634`, Δ `+0.001211590629`)
+  - `ndcg@10=0.127101142105` (paper `0.1242`, Δ `+0.002901142105`)
+- Full per-metric comparison table: `docs/paper_alignment.md`
+
+Reproduce on TPU (from clean GitHub `main`):
+
+```bash
+PYTHONPATH=src python -m minionerec_jax.cli eval-official-parity   --checkpoint-dir /tmp/minionerec-assets/Office_ckpt   --info-file /tmp/official-minionerec/data/Amazon/info/Office_Products_5_2016-10-2018-11.txt   --test-csv /tmp/official-minionerec/data/Amazon/test/Office_Products_5_2016-10-2018-11.csv   --result-json artifacts/eval/office_full_beam16_batch16.json   --category Office_Products   --batch-size 16   --num-beams 16   --max-new-tokens 256   --length-penalty 0.0   --seed 42   --start-index 0   --model-dtype bfloat16   --param-dtype bfloat16   --sharding-axis-dims 1,1,1,-1,1   --early-stopping never
+```
+
+Then compute metrics:
+
+```bash
+PYTHONPATH=src python -m minionerec_jax.cli eval-metrics   --predictions-json artifacts/eval/office_full_beam16_batch16.json   --item-info ../official-minionerec/data/Amazon/info/Office_Products_5_2016-10-2018-11
+```
 
 ## GitHub Publish Automation
 
@@ -278,4 +302,4 @@ bash scripts/tpu/run_remote_pipeline.sh --name minionerec-jax-v4 --zone us-centr
 bash scripts/tpu/delete_tpu_vm.sh --name minionerec-jax-v4 --zone us-central2-b --yes
 ```
 
-Note: generation path is currently unstable; TPU orchestration here targets reproducible smoke checks, not a final paper-level parity claim.
+Note: for paper-level comparison, prefer the full `eval-official-parity` + `eval-metrics` flow above with the documented paper profile.

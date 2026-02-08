@@ -5,13 +5,11 @@ from GitHub publish through TPU create/setup/run/log collection/teardown.
 
 ## Scope and Current Limitations
 
-- This runbook covers **orchestration + smoke execution** only.
-- It does **not** claim final paper-level metric reproduction on TPU.
-- Known runtime caveat: generation remains unstable due to mesh-context and
-  generation-config compatibility drift; current smoke checks focus on CLI probes
-  and dry-run-friendly pipeline commands.
-- EasyDeL checkpoint loading requires using a **local checkpoint subdirectory path**
-  workaround (already reflected by `probe-load --checkpoint-dir .../Industrial_ckpt`).
+- This runbook covers end-to-end TPU orchestration and full `eval-official-parity` execution.
+- Paper-level alignment is reproducible with the documented **paper profile** (`num_beams=16` on Office).
+- Exact values can still drift across runtime versions; pin `jax`, `easydel`, `transformers`, and `huggingface_hub`.
+- EasyDeL checkpoint loading uses a **local checkpoint subdirectory path**
+  (for example `/tmp/minionerec-assets/Office_ckpt`).
 
 ## Prerequisites
 
@@ -147,6 +145,22 @@ The script prints machine-readable lines (for example `status=`, `run=`, `run_re
 `remote_log_file=`). Save terminal output if you want a full execution trace.
 
 ---
+
+
+## 3.5) Paper-Profile Full Eval Command (Office)
+
+Run this directly on TPU for the paper-comparison profile:
+
+```bash
+cd /tmp/minionerec-jax
+PYTHONPATH=src python -m minionerec_jax.cli eval-official-parity   --checkpoint-dir /tmp/minionerec-assets/Office_ckpt   --info-file /tmp/official-minionerec/data/Amazon/info/Office_Products_5_2016-10-2018-11.txt   --test-csv /tmp/official-minionerec/data/Amazon/test/Office_Products_5_2016-10-2018-11.csv   --result-json artifacts/eval/office_full_beam16_batch16.json   --category Office_Products   --batch-size 16   --num-beams 16   --max-new-tokens 256   --length-penalty 0.0   --seed 42   --start-index 0   --model-dtype bfloat16   --param-dtype bfloat16   --sharding-axis-dims 1,1,1,-1,1   --early-stopping never
+```
+
+Then compute metrics:
+
+```bash
+PYTHONPATH=src python -m minionerec_jax.cli eval-metrics   --predictions-json artifacts/eval/office_full_beam16_batch16.json   --item-info /tmp/official-minionerec/data/Amazon/info/Office_Products_5_2016-10-2018-11
+```
 
 ## 4) Collect Logs and Results
 

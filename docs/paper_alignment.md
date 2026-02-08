@@ -11,18 +11,18 @@ This document records the current metric alignment state against the MiniOneRec 
 
 ### Industrial (full set)
 
-- Predictions: `artifacts/eval/industrial_full_beam50_batch16.json`
-- Runtime log: `artifacts/logs/industrial_full_beam50_batch16_rerun.log`
+- Predictions: `artifacts/eval/industrial_full_ropefix.json`
+- Runtime log: `artifacts/logs/industrial_full_beam50_batch16_rerun.log` (source run log)
 - `n_beam=50`, `sample_count=4533`, `missing_item_predictions=0`
 
 | Metric | Run | Paper | Delta |
 |---|---:|---:|---:|
 | HR@3 | 0.113611294948 | 0.1143 | -0.000688705052 |
-| NDCG@3 | 0.100962956706 | 0.1011 | -0.000137043294 |
-| HR@5 | 0.128833002427 | 0.1321 | -0.003266997573 |
-| NDCG@5 | 0.107286564138 | 0.1084 | -0.001113435862 |
+| NDCG@3 | 0.101758723470 | 0.1011 | +0.000658723470 |
+| HR@5 | 0.132142069270 | 0.1321 | +0.000042069270 |
+| NDCG@5 | 0.109439794417 | 0.1084 | +0.001039794417 |
 | HR@10 | 0.157732186190 | 0.1586 | -0.000867813810 |
-| NDCG@10 | 0.116621709919 | 0.1167 | -0.000078290081 |
+| NDCG@10 | 0.117574795587 | 0.1167 | +0.000874795587 |
 
 ### Office (full set, paper profile)
 
@@ -54,6 +54,6 @@ PYTHONPATH=src python -m minionerec_jax.cli eval-metrics \
   --item-info ../official-minionerec/data/Amazon/info/Office_Products_5_2016-10-2018-11
 
 PYTHONPATH=src python -m minionerec_jax.cli eval-metrics \
-  --predictions-json artifacts/eval/industrial_full_beam50_batch16.json \
+  --predictions-json artifacts/eval/industrial_full_ropefix.json \
   --item-info ../official-minionerec/data/Amazon/info/Industrial_and_Scientific_5_2016-10-2018-11
 ```
